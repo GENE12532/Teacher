@@ -4,43 +4,90 @@ import { Camera, CheckCircle2, FileText, ListTodo, RefreshCcw, Save } from 'luci
 import SoloAppShell from '../components/SoloAppShell.vue'
 import UiButton from '../components/ui/UiButton.vue'
 import UiCard from '../components/ui/UiCard.vue'
-import UiProgress from '../components/ui/UiProgress.vue'
 import UiDialog from '../components/ui/UiDialog.vue'
-import { midApp } from '../mock/platformData'
+import UiProgress from '../components/ui/UiProgress.vue'
+import { listDiagnosisStudents, getStudentProfile, uploadDiagnosisImage, archiveDiagnosis } from '../api/diagnosis'
 
-const names = ['王晨','李萌','陈果','周宁','赵川','何雨','孙璐','郑航','吴桐','冯乐','蒋欣','陶可','陆凡','马悦','谢安','邱晨','许诺','曹睿','潘琪','朱琳','韩涛','沈佳','梁宇','丁然','罗茜','袁博','魏星','唐菲','苏航','顾言']
-const topics = ['分数应用题', '阅读理解', '实验记录', '几何证明', '病句修改', '函数图像']
+const appName = '骨干教师端'
+const pageTitle = '错题智能诊断'
+const pageSubtitle = '识别学生错因、生成策略并持续维护学情样本。'
+const theme = 'mid'
+const navItems = [
+  { name: '诊断', path: '/mid/diagnosis', icon: '诊' },
+  { name: '助教', path: '/mid/avatar', icon: '助' },
+  { name: '研究', path: '/mid/research', icon: '研' },
+]
 
-function buildStudents() {
-  return Array.from({ length: 30 }, (_, index) => {
-    const wrongCount = 12 - (index % 10) - Math.floor(index / 8)
-    return {
-      id: index + 1,
-      name: names[index],
-      className: `六年级${(index % 5) + 1}班`,
-      topic: topics[index % topics.length],
-      wrongCount,
-      latestDate: `04-${String((index % 20) + 1).padStart(2, '0')}`,
-      level: wrongCount >= 8 ? '高风险' : wrongCount >= 5 ? '需关注' : '稳定',
-      color: wrongCount >= 8 ? '#ef4444' : wrongCount >= 5 ? '#f59e0b' : '#22c55e',
-      reason: wrongCount >= 8 ? '审题不稳，数量关系提取反复出错。' : wrongCount >= 5 ? '迁移应用时步骤容易混淆。' : '少量变式题仍需回看。',
-      strategy: wrongCount >= 8 ? '先个别纠偏，再做同构题和变式题。' : wrongCount >= 5 ? '补充审题口令训练与讲评。' : '保持每周一次错题回顾。',
-      archive: [],
-      knowledge: [
-        { name: '基础概念', value: Math.max(10, 42 - index) },
-        { name: '审题判断', value: Math.max(10, 26 + (index % 5) * 8) },
-        { name: '迁移应用', value: Math.max(10, 20 + (index % 7) * 6) },
-      ],
-    }
-  }).sort((a, b) => b.wrongCount - a.wrongCount)
+function formatDate(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-const students = ref(buildStudents())
+function formatTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return `今天 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function riskColor(level) {
+  if (!level || level === '稳定') return '#22c55e'
+  if (level === '需关注') return '#f59e0b'
+  return '#ef4444'
+}
+
+function riskLevel(reportCount) {
+  if (reportCount >= 8) return '高风险'
+  if (reportCount >= 5) return '需关注'
+  return '稳定'
+}
+
+function mapKnowledge(topicDistribution) {
+  if (!topicDistribution) return []
+  const entries = Object.entries(topicDistribution)
+  const max = Math.max(...entries.map(([, v]) => v), 1)
+  return entries.map(([name, count]) => ({
+    name,
+    value: Math.round((count / max) * 100),
+  }))
+}
+
+function mapStudent(s) {
+  const level = s.riskLevel || riskLevel(s.reportCount || 0)
+  return {
+    name: s.studentName || '',
+    className: s.className || '',
+    topic: s.latestTopic || s.subject || '',
+    wrongCount: s.reportCount || 0,
+    latestDate: formatDate(s.latestAt),
+    level,
+    color: riskColor(level),
+    reason: s.latestRootCause || '',
+    strategy: s.latestInterventions || '',
+    archive: [],
+    knowledge: [],
+  }
+}
+
+const students = ref([])
+const currentProfile = ref(null)
+const archiveEntries = ref([])
 const keyword = ref('')
-const currentId = ref(students.value[0].id)
+const currentName = ref('')
 const currentStage = ref(1)
-const imagePreview = ref('https://picsum.photos/seed/error-sheet/800/520')
+const imagePreview = ref('')
 const reportOpen = ref(false)
+const loading = ref(false)
+
+const derivedStats = computed(() => {
+  const highRisk = students.value.filter((s) => s.level === '高风险').length
+  const totalReports = students.value.reduce((sum, s) => sum + s.wrongCount, 0)
+  return [
+    { label: '待处理样本', value: String(highRisk) },
+    { label: '已生成建议', value: String(totalReports) },
+    { label: '档案更新', value: String(archiveEntries.value.length) },
+  ]
+})
 
 const filteredStudents = computed(() => {
   const key = keyword.value.trim()
@@ -48,54 +95,166 @@ const filteredStudents = computed(() => {
   if (!key) return source
   return source.filter((item) => `${item.name}${item.className}${item.topic}${item.reason}`.includes(key))
 })
-const current = computed(() => filteredStudents.value.find((item) => item.id === currentId.value) || students.value.find((item) => item.id === currentId.value) || students.value[0])
-const archiveCount = computed(() => students.value.reduce((sum, item) => sum + item.archive.length, 0))
+
+const current = computed(() =>
+  filteredStudents.value.find((item) => item.name === currentName.value)
+  || students.value.find((item) => item.name === currentName.value)
+  || students.value[0],
+)
+
+const archiveCount = computed(() => archiveEntries.value.length)
+
 const navProgress = computed(() => Math.round((currentStage.value / 3) * 100))
+
 const workflow = computed(() => [
   { id: 1, title: '选学生', hint: '先从总表里点一名学生。' },
   { id: 2, title: '看分析', hint: '查看知识点、错因、措施。' },
   { id: 3, title: '存档导出', hint: '保存到学情档案并导出。' },
 ])
+
 const todoList = computed(() => [
   { id: 'a', text: '选中学生', done: !!current.value },
   { id: 'b', text: '查看错因', done: currentStage.value >= 2 },
-  { id: 'c', text: '保存档案', done: !!current.value.archive.length },
+  { id: 'c', text: '保存档案', done: archiveEntries.value.length > 0 },
 ])
-const reportSummary = computed(() => `# ${current.value.name} 错题诊断单\n\n- 班级：${current.value.className}\n- 错题数：${current.value.wrongCount}\n- 知识点：${current.value.topic}\n\n## 错因\n${current.value.reason}\n\n## 改进措施\n${current.value.strategy}`)
 
-function selectStudent(item) {
-  currentId.value = item.id
-  currentStage.value = 2
+const reportSummary = computed(() => {
+  if (!current.value) return ''
+  return [
+    `# ${current.value.name} 错题诊断单`,
+    '',
+    `- 班级：${current.value.className}`,
+    `- 错题数：${current.value.wrongCount}`,
+    `- 知识点：${current.value.topic}`,
+    '',
+    `## 错因`,
+    current.value.reason,
+    '',
+    `## 改进措施`,
+    current.value.strategy,
+  ].join('\n')
+})
+
+async function loadStudents() {
+  loading.value = true
+  try {
+    const list = await listDiagnosisStudents()
+    students.value = list.map(mapStudent).sort((a, b) => b.wrongCount - a.wrongCount)
+    if (students.value.length > 0 && !currentName.value) {
+      currentName.value = students.value[0].name
+    }
+  } catch {
+    // keep empty
+  } finally {
+    loading.value = false
+  }
 }
+
+async function selectStudent(item) {
+  currentName.value = item.name
+  currentStage.value = 2
+  try {
+    const profile = await getStudentProfile(item.name, item.className)
+    currentProfile.value = profile
+    const summary = profile.summary
+    if (summary) {
+      const idx = students.value.findIndex((s) => s.name === item.name)
+      if (idx >= 0) {
+        students.value[idx] = {
+          ...students.value[idx],
+          reason: summary.latestRootCause || students.value[idx].reason,
+          strategy: summary.latestInterventions || students.value[idx].strategy,
+          knowledge: mapKnowledge(profile.topicDistribution),
+        }
+        students.value = [...students.value]
+      }
+    }
+  } catch {
+    // use basic student data
+  }
+}
+
 function goStage(id) {
   currentStage.value = id
 }
-function uploadSample(event) {
+
+async function uploadSample(event) {
   const file = event.target.files?.[0]
   if (!file) return
   imagePreview.value = URL.createObjectURL(file)
-  current.value.wrongCount += 1
-  current.value.reason = `${current.value.reason} 新样本显示同类问题仍在重复。`
-  current.value.strategy = `${current.value.strategy} 本周再补 1 次针对训练。`
-  students.value = [...students.value].sort((a, b) => b.wrongCount - a.wrongCount)
-  currentStage.value = 2
+  const base = current.value
+  if (!base) return
+  try {
+    const result = await uploadDiagnosisImage(file, {
+      studentName: base.name,
+      className: base.className,
+      topic: base.topic,
+    })
+    const idx = students.value.findIndex((s) => s.name === base.name)
+    if (idx >= 0) {
+      students.value[idx] = {
+        ...students.value[idx],
+        wrongCount: (students.value[idx].wrongCount || 0) + 1,
+        reason: result.rootCause || students.value[idx].reason,
+        strategy: result.interventions || students.value[idx].strategy,
+      }
+    }
+    students.value = [...students.value].sort((a, b) => b.wrongCount - a.wrongCount)
+    currentStage.value = 2
+  } catch {
+    // error handled silently
+  }
 }
-function rerunRecognition() {
-  current.value.reason = `${current.value.reason} 系统复核后确认主要失分来自审题与迁移。`
-  current.value.strategy = `${current.value.strategy} 可配套学生自查单。`
+
+async function rerunRecognition() {
+  const base = current.value
+  if (!base) return
+  try {
+    const profile = await getStudentProfile(base.name, base.className)
+    currentProfile.value = profile
+    const summary = profile.summary
+    if (summary) {
+      const idx = students.value.findIndex((s) => s.name === base.name)
+      if (idx >= 0) {
+        students.value[idx] = {
+          ...students.value[idx],
+          reason: summary.latestRootCause || students.value[idx].reason,
+          strategy: summary.latestInterventions || students.value[idx].strategy,
+          knowledge: mapKnowledge(profile.topicDistribution),
+        }
+        students.value = [...students.value]
+      }
+    }
+  } catch {
+    // error handled silently
+  }
 }
-function saveStudent() {
-  current.value.archive.unshift({
-    id: Date.now(),
-    time: `今天 ${new Date().getHours()}:${String(new Date().getMinutes()).padStart(2, '0')}`,
-    text: `${current.value.topic}｜${current.value.strategy}`,
-  })
-  currentStage.value = 3
+
+async function saveStudent() {
+  const base = current.value
+  if (!base) return
+  try {
+    const reports = currentProfile.value?.reports || []
+    const latestReport = reports[0]
+    if (latestReport) {
+      await archiveDiagnosis(latestReport.id, `${base.topic}｜${base.strategy}`)
+    }
+    archiveEntries.value.unshift({
+      id: Date.now(),
+      time: formatTime(new Date().toISOString()),
+      text: `${base.topic}｜${base.strategy}`,
+    })
+    currentStage.value = 3
+  } catch {
+    // error handled silently
+  }
 }
+
+loadStudents()
 </script>
 
 <template>
-  <SoloAppShell :app-name="midApp.appName" :title="midApp.diagnosis.title" subtitle="" :stats="midApp.diagnosis.stats" :nav-items="midApp.navItems" :theme="midApp.theme">
+  <SoloAppShell :app-name="appName" :title="pageTitle" subtitle="" :stats="derivedStats" :nav-items="navItems" :theme="theme">
     <template #left>
       <aside class="lesson-bookmark-sidebar">
         <div class="bookmark-card">
@@ -117,8 +276,8 @@ function saveStudent() {
       <UiCard class="workspace-panel-card">
         <div class="workspace-panel-head"><strong>当前学生</strong><span class="header-channel">错题诊断</span></div>
         <ul class="workspace-checklist">
-          <li><span class="workspace-check"></span><span>{{ current.name }}</span></li>
-          <li><span class="workspace-check"></span><span>{{ current.topic }}</span></li>
+          <li><span class="workspace-check"></span><span>{{ current?.name || '未选择' }}</span></li>
+          <li><span class="workspace-check"></span><span>{{ current?.topic || '-' }}</span></li>
           <li><span class="workspace-check"></span><span>已归档 {{ archiveCount }}</span></li>
         </ul>
       </UiCard>
@@ -130,11 +289,12 @@ function saveStudent() {
           <div><p class="hero-kicker">STEP 1</p><h3>先选学生</h3></div>
           <input v-model="keyword" placeholder="搜索学生/班级/知识点" />
         </div>
-        <div class="mid-student-table-wrap">
+        <p v-if="loading" class="helper-copy">加载中…</p>
+        <div v-else class="mid-student-table-wrap">
           <table class="mid-student-table">
             <thead><tr><th>排名</th><th>学生</th><th>班级</th><th>知识点</th><th>错题数</th><th>等级</th><th>更新</th></tr></thead>
             <tbody>
-              <tr v-for="(item, index) in filteredStudents" :key="item.id" :class="{ active: currentId === item.id }" @click="selectStudent(item)">
+              <tr v-for="(item, index) in filteredStudents" :key="item.name" :class="{ active: currentName === item.name }" @click="selectStudent(item)">
                 <td>{{ index + 1 }}</td><td>{{ item.name }}</td><td>{{ item.className }}</td><td>{{ item.topic }}</td>
                 <td><span class="wrong-count-pill" :style="{ background: item.color }">{{ item.wrongCount }}</span></td>
                 <td :style="{ color: item.color, fontWeight: 700 }">{{ item.level }}</td><td>{{ item.latestDate }}</td>
@@ -142,12 +302,13 @@ function saveStudent() {
             </tbody>
           </table>
         </div>
+        <p v-if="!loading && !students.length" class="helper-copy">暂无诊断数据，请先上传错题。</p>
       </section>
 
       <section v-if="currentStage === 2" class="editor-card student-profile-card mid-analysis-card">
-        <div class="panel-headline"><div><p class="hero-kicker">STEP 2</p><h3>{{ current.name }}</h3></div></div>
-        <img :src="imagePreview" alt="错题样本" class="analysis-preview-image" />
-        <div class="knowledge-bars">
+        <div class="panel-headline"><div><p class="hero-kicker">STEP 2</p><h3>{{ current?.name || '' }}</h3></div></div>
+        <img v-if="imagePreview" :src="imagePreview" alt="错题样本" class="analysis-preview-image" />
+        <div v-if="current?.knowledge?.length" class="knowledge-bars">
           <article v-for="item in current.knowledge" :key="item.name" class="knowledge-bar-item">
             <div><strong>{{ item.name }}</strong><small>{{ item.value }}%</small></div>
             <div class="knowledge-track"><span :style="{ width: `${item.value}%` }"></span></div>
@@ -168,8 +329,8 @@ function saveStudent() {
           <UiButton as="a" :href="`data:text/plain;charset=utf-8,${encodeURIComponent(reportSummary)}`" download="学生错题诊断单.txt"><FileText :size="16" /> 导出给学生</UiButton>
         </div>
         <div class="card-list">
-          <article v-for="item in current.archive" :key="item.id" class="data-card"><strong>{{ item.time }}</strong><p>{{ item.text }}</p></article>
-          <article v-if="!current.archive.length" class="data-card"><strong>暂无记录</strong></article>
+          <article v-for="item in archiveEntries" :key="item.id" class="data-card"><strong>{{ item.time }}</strong><p>{{ item.text }}</p></article>
+          <article v-if="!archiveEntries.length" class="data-card"><strong>暂无记录</strong></article>
         </div>
         <div class="bottom-action-bar"><UiButton variant="secondary" @click="reportOpen = true">预览导出</UiButton></div>
       </section>

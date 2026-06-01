@@ -6,115 +6,255 @@ import UiButton from '../components/ui/UiButton.vue'
 import UiCard from '../components/ui/UiCard.vue'
 import UiDialog from '../components/ui/UiDialog.vue'
 import UiProgress from '../components/ui/UiProgress.vue'
-import { midApp } from '../mock/platformData'
+import { listResources } from '../api/resource'
+import { recommendTopic, listTopics, saveTopic } from '../api/research'
+import { listExperts, createAppointment } from '../api/expert'
 
-const TOPIC_LIBRARY_KEY = 'mid-research-topic-library'
+const appName = '骨干教师端'
+const pageTitle = '课题研究导航'
+const pageSubtitle = '基于教学表现生成结构化课题建议，并维护研究清单。'
+const theme = 'mid'
+const navItems = [
+  { name: '诊断', path: '/mid/diagnosis', icon: '诊' },
+  { name: '助教', path: '/mid/avatar', icon: '助' },
+  { name: '研究', path: '/mid/research', icon: '研' },
+]
+
 const categoryList = ['全部', '语文', '数学', '综合实践', '科学']
-const schoolList = ['桥头小学', '河西小学', '南岭实验校', '东山教学点']
-const titleSeeds = ['乡土案例融入语文表达课设计','分层提问支持下的数学错题讲评','综合实践中的本地资源观察记录','低年级课堂表达启动方案','实验记录单优化与科学探究课','小组合作规则建立教案']
 
-function createDocLibrary() {
-  return Array.from({ length: 24 }, (_, index) => ({
-    id: index + 1,
-    title: `${titleSeeds[index % titleSeeds.length]}（样本 ${index + 1}）`,
-    subject: categoryList[(index % (categoryList.length - 1)) + 1],
-    grade: `${['三', '四', '五', '六'][index % 4]}年级`,
-    school: schoolList[index % schoolList.length],
-    updatedAt: `2026-04-${String((index % 22) + 1).padStart(2, '0')}`,
-    summary: ['课堂实录 + 活动结构', '错题讲评 + 反馈策略', '案例资源 + 观察单'][index % 3],
-    selected: index < 4,
-  }))
-}
-function loadTopicLibrary() {
-  if (typeof window === 'undefined') return []
-  try {
-    return JSON.parse(window.localStorage.getItem(TOPIC_LIBRARY_KEY) || '[]')
-  } catch {
-    return []
-  }
-}
+const docLibrary = ref([])
+const topicLibrary = ref([])
+const experts = ref([])
+const loadingDocs = ref(false)
 
-const docLibrary = ref(createDocLibrary())
-const topicLibrary = ref(loadTopicLibrary())
-const selectedTopic = ref({ ...midApp.research.list[0], transformed: false, createdAt: '', sources: [] })
+const selectedDocIds = ref(new Set())
+const selectedTopic = ref({ title: '', meta: '', extra: '', sources: [], applicationDraft: '', transformed: false, createdAt: '' })
 const keyword = ref('')
 const category = ref('全部')
 const dataAuthorized = ref(false)
-const activeTopicId = ref(topicLibrary.value[0]?.id ?? null)
+const activeTopicId = ref(null)
 const currentStage = ref(1)
 const expertOpen = ref(false)
 
-watch(topicLibrary, (value) => {
-  if (typeof window !== 'undefined') window.localStorage.setItem(TOPIC_LIBRARY_KEY, JSON.stringify(value))
-}, { deep: true })
+const derivedStats = computed(() => [
+  { label: '在研课题', value: String(topicLibrary.value.length) },
+  { label: '本周推荐', value: '—' },
+  { label: '专家建议', value: '—' },
+])
 
 const filteredDocs = computed(() => {
   const value = keyword.value.trim()
   return docLibrary.value.filter((item) => {
     const matchCategory = category.value === '全部' || item.subject === category.value
-    const matchKeyword = !value || `${item.title}${item.subject}${item.grade}${item.school}${item.summary}`.includes(value)
+    const matchKeyword = !value || `${item.title}${item.subject}${item.grade}${item.school || ''}${item.summary || ''}`.includes(value)
     return matchCategory && matchKeyword
   })
 })
-const selectedDocs = computed(() => docLibrary.value.filter((item) => item.selected))
+
+const selectedDocs = computed(() => docLibrary.value.filter((item) => selectedDocIds.value.has(item.id)))
+
 const activeTopic = computed(() => topicLibrary.value.find((item) => item.id === activeTopicId.value) ?? null)
+
 const navProgress = computed(() => Math.round((currentStage.value / 4) * 100))
+
 const workflow = computed(() => [
   { id: 1, title: '授权数据', hint: '先开启案例授权。' },
   { id: 2, title: '选教案', hint: '从文档库选择来源。' },
   { id: 3, title: '建课题', hint: '生成建议并创建课题。' },
   { id: 4, title: '我的课题库', hint: '随时打开查看。' },
 ])
+
 const todoList = computed(() => [
   { id: '1', text: '完成案例授权', done: dataAuthorized.value },
-  { id: '2', text: '选择教案来源', done: !!selectedDocs.value.length },
-  { id: '3', text: '创建课题', done: !!topicLibrary.value.length },
+  { id: '2', text: '选择教案来源', done: selectedDocIds.value.size > 0 },
+  { id: '3', text: '创建课题', done: topicLibrary.value.length > 0 },
 ])
+
 const recommendationState = computed(() => dataAuthorized.value ? '已生成结构化推荐' : '等待授权')
-const topicSummary = computed(() => `${selectedTopic.value.title}\n\n${selectedTopic.value.meta}\n\n${selectedTopic.value.extra}\n\n来源教案：\n${selectedDocs.value.length ? selectedDocs.value.map((item) => `- ${item.title}`).join('\n') : '- 暂未选择'}`)
+
+const topicSummary = computed(() => {
+  const sourceList = selectedTopic.value.sources?.length
+    ? selectedTopic.value.sources.map((s) => `- ${s}`).join('\n')
+    : '- 暂未选择'
+  return `${selectedTopic.value.title}\n\n${selectedTopic.value.meta}\n\n${selectedTopic.value.extra}\n\n来源教案：\n${sourceList}`
+})
+
+const topicSourcesStr = computed(() =>
+  Array.isArray(selectedTopic.value.sources) ? selectedTopic.value.sources.join(', ') : selectedTopic.value.sources,
+)
+
+function formatDate(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+async function loadDocLibrary() {
+  loadingDocs.value = true
+  try {
+    const params = { resourceType: 'lesson' }
+    if (category.value !== '全部') params.subject = category.value
+    const list = await listResources(params)
+    docLibrary.value = list.map((r) => ({
+      ...r,
+      selected: selectedDocIds.value.has(r.id),
+    }))
+  } catch {
+    // keep empty library
+  } finally {
+    loadingDocs.value = false
+  }
+}
+
+async function loadTopics() {
+  try {
+    const list = await listTopics()
+    topicLibrary.value = list.map((t) => ({
+      ...t,
+      sources: t.sources ? t.sources.split(',') : [],
+    }))
+    if (topicLibrary.value.length > 0 && !activeTopicId.value) {
+      activeTopicId.value = topicLibrary.value[0].id
+    }
+  } catch {
+    // keep empty
+  }
+}
+
+async function loadExperts() {
+  try {
+    experts.value = await listExperts()
+  } catch {
+    // keep empty
+  }
+}
+
+watch(category, () => {
+  if (dataAuthorized.value) loadDocLibrary()
+})
 
 function goStage(id) { currentStage.value = id }
-function authorizeCases() { dataAuthorized.value = true; currentStage.value = 2 }
-function toggleDoc(item) { item.selected = !item.selected }
-function buildRecommendation() {
-  const sources = selectedDocs.value
-  const sourceTitles = sources.map((item) => item.title).join('、') || '当前未选择文档'
-  selectedTopic.value = {
-    ...selectedTopic.value,
-    title: `基于 ${sources.length} 篇教案的乡村课堂研究课题`,
-    meta: `推荐依据：系统分析 ${sourceTitles} 后，识别出高频研究主题。`,
-    extra: '申报模板：区级课题 A-03；专家资源：刘教授、陈老师。',
-    transformed: false,
-    createdAt: '',
-    sources: sources.map((item) => item.title),
-  }
-  currentStage.value = 3
+
+function authorizeCases() {
+  dataAuthorized.value = true
+  loadDocLibrary()
+  loadTopics()
+  loadExperts()
+  currentStage.value = 2
 }
-function saveTopic() {
-  const now = new Date()
-  const payload = {
-    ...selectedTopic.value,
-    id: Date.now(),
-    createdAt: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`,
-    sources: selectedDocs.value.map((item) => item.title),
+
+function toggleDoc(item) {
+  if (selectedDocIds.value.has(item.id)) {
+    selectedDocIds.value.delete(item.id)
+  } else {
+    selectedDocIds.value.add(item.id)
   }
-  topicLibrary.value.unshift(payload)
-  activeTopicId.value = payload.id
-  selectedTopic.value = { ...payload }
+  selectedDocIds.value = new Set(selectedDocIds.value)
+}
+
+async function buildRecommendation() {
+  const sources = selectedDocs.value
+  const sourceTitles = sources.map((item) => item.title)
+  currentStage.value = 3
+  try {
+    const result = await recommendTopic({
+      teacherGoal: keyword.value || undefined,
+      sources: sourceTitles,
+    })
+    let rec = {}
+    try {
+      rec = JSON.parse(result.recommendationJson || '{}')
+    } catch { /* use empty */ }
+    selectedTopic.value = {
+      title: rec.title || `基于 ${sources.length} 篇教案的乡村课堂研究课题`,
+      meta: rec.meta || `推荐依据：系统分析后识别出高频研究主题。`,
+      extra: rec.extra || '',
+      sources: rec.sources || sourceTitles,
+      applicationDraft: rec.applicationDraft || '',
+      transformed: false,
+      createdAt: '',
+    }
+    if (result.savedTopic) {
+      topicLibrary.value.unshift({
+        ...result.savedTopic,
+        sources: result.savedTopic.sources ? result.savedTopic.sources.split(',') : [],
+      })
+    }
+  } catch {
+    selectedTopic.value = {
+      title: `基于 ${sources.length} 篇教案的乡村课堂研究课题`,
+      meta: `推荐依据：系统分析后识别出高频研究主题。`,
+      extra: '',
+      sources: sourceTitles,
+      applicationDraft: '',
+      transformed: false,
+      createdAt: '',
+    }
+  }
+}
+
+async function saveTopicToServer() {
+  try {
+    const saved = await saveTopic({
+      title: selectedTopic.value.title,
+      meta: selectedTopic.value.meta,
+      extra: selectedTopic.value.extra,
+      sources: Array.isArray(selectedTopic.value.sources)
+        ? selectedTopic.value.sources.join(',')
+        : selectedTopic.value.sources,
+      applicationDraft: selectedTopic.value.applicationDraft || '',
+    })
+    topicLibrary.value.unshift({
+      ...saved,
+      sources: saved.sources ? saved.sources.split(',') : [],
+    })
+    activeTopicId.value = saved.id
+    selectedTopic.value.createdAt = saved.createdAt
+    currentStage.value = 4
+  } catch {
+    // error handled in UI
+  }
+}
+
+function openTopic(item) {
+  activeTopicId.value = item.id
+  selectedTopic.value = {
+    ...item,
+    sources: Array.isArray(item.sources) ? item.sources : (item.sources ? item.sources.split(',') : []),
+    transformed: false,
+  }
   currentStage.value = 4
 }
-function openTopic(item) { activeTopicId.value = item.id; selectedTopic.value = { ...item }; currentStage.value = 4 }
+
 function transformResult() {
-  selectedTopic.value = { ...selectedTopic.value, transformed: true, extra: `${selectedTopic.value.extra} 已生成成果转化任务。` }
-  if (activeTopic.value) {
-    const index = topicLibrary.value.findIndex((item) => item.id === activeTopic.value.id)
-    if (index >= 0) topicLibrary.value[index] = { ...selectedTopic.value, id: activeTopic.value.id }
+  selectedTopic.value = { ...selectedTopic.value, transformed: true }
+  const index = topicLibrary.value.findIndex((item) => item.id === activeTopicId.value)
+  if (index >= 0) {
+    topicLibrary.value[index] = { ...topicLibrary.value[index], transformed: true }
   }
+}
+
+async function consultExpert() {
+  if (!activeTopicId.value || !experts.value.length) {
+    expertOpen.value = true
+    return
+  }
+  try {
+    await createAppointment({
+      expertId: experts.value[0].id,
+      topicId: activeTopicId.value,
+      title: selectedTopic.value.title,
+      question: selectedTopic.value.meta,
+    })
+  } catch {
+    // keep going, show preview anyway
+  }
+  expertOpen.value = true
 }
 </script>
 
 <template>
-  <SoloAppShell :app-name="midApp.appName" :title="midApp.research.title" subtitle="" :stats="midApp.research.stats" :nav-items="midApp.navItems" :theme="midApp.theme">
+  <SoloAppShell :app-name="appName" :title="pageTitle" subtitle="" :stats="derivedStats" :nav-items="navItems" :theme="theme">
     <template #left>
       <aside class="lesson-bookmark-sidebar">
         <div class="bookmark-card">
@@ -137,7 +277,7 @@ function transformResult() {
         <div class="workspace-panel-head"><strong>我的课题库</strong><span class="header-channel">{{ topicLibrary.length }} 项</span></div>
         <div class="card-list">
           <article v-for="item in topicLibrary.slice(0, 4)" :key="item.id" class="history-row" :class="{ active: activeTopicId === item.id }" @click="openTopic(item)">
-            <strong>{{ item.title }}</strong><small>{{ item.createdAt }}</small>
+            <strong>{{ item.title }}</strong><small>{{ formatDate(item.createdAt) }}</small>
           </article>
         </div>
       </UiCard>
@@ -154,28 +294,31 @@ function transformResult() {
         <div class="old-library-tags">
           <button v-for="item in categoryList" :key="item" type="button" class="old-library-tag" :class="{ active: category === item }" @click="category = item">{{ item }}</button>
         </div>
+        <p v-if="loadingDocs" class="helper-copy">加载中…</p>
         <div class="old-library-grid">
-          <article v-for="item in filteredDocs" :key="item.id" class="old-doc-card" :class="{ active: item.selected }" @click="toggleDoc(item)">
+          <article v-for="item in filteredDocs" :key="item.id" class="old-doc-card" :class="{ active: selectedDocIds.has(item.id) }" @click="toggleDoc(item)">
             <div class="old-doc-cover">教案</div>
-            <div class="old-doc-body"><strong>{{ item.title }}</strong><p>{{ item.summary }}</p><small>{{ item.subject }} ｜ {{ item.grade }} ｜ {{ item.school }}</small></div>
+            <div class="old-doc-body"><strong>{{ item.title }}</strong><p>{{ item.summary }}</p><small>{{ item.subject }} ｜ {{ item.grade }} ｜ {{ item.school || '未知学校' }}</small></div>
           </article>
+          <p v-if="!loadingDocs && !filteredDocs.length" class="helper-copy">暂无教案资源。</p>
         </div>
-        <div class="bottom-action-bar"><UiButton @click="buildRecommendation"><Files :size="16" /> 下一步</UiButton></div>
+        <div class="bottom-action-bar"><UiButton @click="buildRecommendation" :disabled="!selectedDocIds.size"><Files :size="16" /> 下一步</UiButton></div>
       </section>
 
       <section v-if="currentStage === 3" class="editor-card research-topic-editor-box">
         <div class="panel-headline"><div><p class="hero-kicker">STEP 3</p><h3>创建课题</h3></div></div>
         <div class="selected-source-list">
           <article v-for="item in selectedDocs" :key="item.id" class="selected-source-row"><strong>{{ item.title }}</strong><small>{{ item.subject }} · {{ item.grade }}</small></article>
+          <article v-if="!selectedDocs.length" class="selected-source-row"><strong>未选择教案</strong></article>
         </div>
         <input v-model="selectedTopic.title" placeholder="请输入研究选题" />
         <textarea v-model="selectedTopic.meta" rows="4"></textarea>
         <textarea v-model="selectedTopic.extra" rows="5"></textarea>
         <div class="preview-paper old-library-preview"><pre>{{ topicSummary }}</pre></div>
         <div class="bottom-action-bar">
-          <UiButton variant="secondary" @click="expertOpen = true"><Send :size="16" /> 咨询专家</UiButton>
+          <UiButton variant="secondary" @click="consultExpert"><Send :size="16" /> 咨询专家</UiButton>
           <UiButton variant="secondary" @click="transformResult"><BookPlus :size="16" /> 成果转化</UiButton>
-          <UiButton @click="saveTopic"><FileBadge2 :size="16" /> 创建课题</UiButton>
+          <UiButton @click="saveTopicToServer"><FileBadge2 :size="16" /> 创建课题</UiButton>
         </div>
       </section>
 
@@ -183,8 +326,9 @@ function transformResult() {
         <div class="panel-headline"><div><p class="hero-kicker">STEP 4</p><h3>我的课题库</h3></div></div>
         <div class="my-topic-list">
           <article v-for="item in topicLibrary" :key="item.id" class="my-topic-row" :class="{ active: activeTopicId === item.id }" @click="openTopic(item)">
-            <strong>{{ item.title }}</strong><small>{{ item.createdAt }}</small>
+            <strong>{{ item.title }}</strong><small>{{ formatDate(item.createdAt) }}</small>
           </article>
+          <article v-if="!topicLibrary.length" class="my-topic-row"><strong>暂无课题</strong></article>
         </div>
       </section>
 

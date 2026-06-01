@@ -1,8 +1,31 @@
 <script setup>
-import { RouterLink } from 'vue-router'
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { seniorApp } from '../mock/platformData'
+import { useAuthStore } from '../stores/authStore'
 
-const points = ['智能语音备课', '随堂反思', '案例沉淀']
+const router = useRouter()
+const { login, loading } = useAuthStore()
+
+const username = ref('')
+const password = ref('')
+const loginError = ref('')
+
+const highlights = ['智能语音备课', '随堂反思', '案例沉淀']
+
+async function handleLogin() {
+  loginError.value = ''
+  if (!username.value.trim() || !password.value.trim()) {
+    loginError.value = '请输入账号和密码'
+    return
+  }
+  try {
+    await login(username.value.trim(), password.value)
+    router.push('/senior/lesson')
+  } catch (e) {
+    loginError.value = e.message || '登录失败，请重试'
+  }
+}
 </script>
 
 <template>
@@ -16,7 +39,7 @@ const points = ['智能语音备课', '随堂反思', '案例沉淀']
         <h1>把课堂经验沉淀成可复用的教案与教学记录。</h1>
         <p>面向长期扎根乡村课堂的教师，支持语音备课、课堂反思和案例积累，帮助经验持续转化。</p>
         <div class="login-point-list">
-          <span v-for="item in points" :key="item">{{ item }}</span>
+          <span v-for="item in highlights" :key="item">{{ item }}</span>
         </div>
       </div>
       <div class="login-card-panel">
@@ -27,13 +50,16 @@ const points = ['智能语音备课', '随堂反思', '案例沉淀']
           </div>
           <h2>{{ seniorApp.login.title }}</h2>
           <p class="login-subtitle">{{ seniorApp.login.subtitle }}</p>
-          <div class="login-form-clean">
+          <form class="login-form-clean" @submit.prevent="handleLogin">
             <label class="field-label">账号</label>
-            <input :value="seniorApp.login.account" readonly />
+            <input v-model="username" placeholder="请输入账号" autocomplete="username" />
             <label class="field-label">密码</label>
-            <input value="••••••••" readonly type="password" />
-            <RouterLink class="login-button-clean" :to="seniorApp.login.enterPath">进入工作区</RouterLink>
-          </div>
+            <input v-model="password" type="password" placeholder="请输入密码" autocomplete="current-password" />
+            <p v-if="loginError" class="login-error">{{ loginError }}</p>
+            <button type="submit" class="login-button-clean" :disabled="loading">
+              {{ loading ? '登录中…' : '进入工作区' }}
+            </button>
+          </form>
         </div>
       </div>
     </section>

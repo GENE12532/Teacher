@@ -14,6 +14,19 @@ import NoviceLoginPage from './pages/NoviceLoginPage.vue'
 import NoviceLibraryPage from './pages/NoviceLibraryPage.vue'
 import NoviceQaPage from './pages/NoviceQaPage.vue'
 import NovicePortfolioPage from './pages/NovicePortfolioPage.vue'
+import { useAuthStore } from './stores/authStore'
+
+const PUBLIC_PATHS = ['/', '/senior/login', '/mid/login', '/novice/login']
+
+function loginPath(prefix) {
+  return `/${prefix}/login`
+}
+
+const PREFIX_LOGIN_MAP = {
+  senior: '/senior/lesson',
+  mid: '/mid/diagnosis',
+  novice: '/novice/library',
+}
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -37,6 +50,27 @@ const router = createRouter({
   scrollBehavior() {
     return { top: 0 }
   },
+})
+
+useAuthStore().fetchUser()
+
+router.beforeEach((to) => {
+  const { isAuthenticated } = useAuthStore()
+
+  if (PUBLIC_PATHS.includes(to.path)) {
+    if (isAuthenticated.value && to.path.includes('/login')) {
+      const prefix = to.path.split('/')[1]
+      return PREFIX_LOGIN_MAP[prefix] || '/'
+    }
+    return true
+  }
+
+  if (!isAuthenticated.value) {
+    const prefix = to.path.split('/')[1]
+    return loginPath(prefix)
+  }
+
+  return true
 })
 
 createApp(App).use(router).mount('#app')

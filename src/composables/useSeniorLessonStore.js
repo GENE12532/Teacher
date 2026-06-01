@@ -1,92 +1,208 @@
 import { ref } from 'vue'
-import { seniorApp } from '@/mock/platformData'
+import {
+  generateLesson as generateLessonApi,
+  listLessons,
+  createLesson,
+  updateLesson as updateLessonApi,
+  createReflection,
+  listReflections,
+} from '../api/lesson'
 
-const STORAGE_KEY = 'senior_lesson_drafts_v1'
+function formatTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  const today = new Date()
+  const isToday = d.toDateString() === today.toDateString()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return isToday ? `今天 ${hh}:${mm}` : `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')} ${hh}:${mm}`
+}
 
-function createMarkdownLesson(requirement) {
-  const topic = requirement?.slice(0, 18) || '乡村课堂主题'
-  return `# ${topic} · 结构化教案\n\n## 一、基本信息\n- 学段：小学高段\n- 学科：综合实践\n- 课时：1 课时\n- 场景：乡村本地情境课堂\n\n## 二、教学目标\n1. 结合乡土情境理解核心知识点，并能完成口头表达。\n2. 能从本地案例中提炼观察维度，形成小组讨论结论。\n3. 完成“观察-分析-展示”闭环，提升合作与反思能力。\n\n## 三、本地案例资源\n- 案例 A：村口河道季节变化观察记录（近三月照片+访谈摘录）。\n- 案例 B：本地农事日历（春耕、夏管、秋收、冬藏）与节气对应表。\n- 案例 C：乡村公共空间改造前后对比（学生可实地走访）。\n\n## 四、活动设计（40 分钟）\n### 1) 情境导入（8 分钟）\n- 展示本地图片与问题：\"这组变化背后反映了什么？\"\n- 学生用 1 句话描述观察到的现象。\n\n### 2) 小组任务（20 分钟）\n- 每组选择 1 个本地案例，按“现象-原因-证据”完成分析卡。\n- 教师巡回追问：\"你的证据来自哪里？是否还有反例？\"\n\n### 3) 汇报与评价（10 分钟）\n- 每组 1 分钟展示，其他组用“准确性/完整性/本地性”三维评价。\n- 教师即时反馈并补充学科规范表达。\n\n### 4) 课末沉淀（2 分钟）\n- 留下 1 条“今天最有价值的发现”，作为反思输入。\n\n## 五、评价设计\n- 过程性：小组讨论参与度、证据引用有效性。\n- 结果性：汇报结构完整度、表达准确度。\n- 迁移性：能否把课堂方法迁移到另一个本地问题。\n\n## 六、课后延伸\n- 用手机拍摄 3 张本地观察照片，写 100 字说明并上传。\n- 下一课用作开场素材，形成连续性案例库。\n\n## 七、教师备忘\n- 语音输入需求：${requirement || '请补充本节课具体需求'}\n- 下次优化点：增加学生提问时间，减少教师讲述比例。\n`
+function toDraftItem(lesson) {
+  return {
+    id: lesson.id,
+    title: lesson.title,
+    summary: lesson.summary || '',
+    requirement: lesson.requirement || '',
+    content: lesson.content || '',
+    contentJson: lesson.contentJson || '',
+    updatedAt: formatTime(lesson.updatedAt),
+    createdAt: lesson.createdAt,
+    annotations: { goal: [], localCase: [], activity: [] },
+  }
+}
+
+const drafts = ref([])
+const loading = ref(false)
+const error = ref('')
+let loaded = false
+
+async function loadDrafts() {
+  if (loaded) return
+  loading.value = true
+  error.value = ''
+  try {
+    const list = await listLessons()
+    drafts.value = list.map(toDraftItem)
+    loaded = true
+  } catch (e) {
+    error.value = e.message || '加载失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function generateLesson(requirement) {
+  loading.value = true
+  error.value = ''
+  try {
+    const result = await generateLessonApi(requirement)
+    if (result.savedLesson) {
+      drafts.value.unshift(toDraftItem(result.savedLesson))
+    }
+    return result
+  } catch (e) {
+    error.value = e.message || '生成失败'
+    throw e
+  } finally {
+    loading.value = false
+  }
 }
 
 function buildDraftContent(requirement) {
-  return createMarkdownLesson(requirement)
+  const topic = requirement?.slice(0, 24) || '乡村课堂主题'
+  return [
+    `# ${topic}`,
+    '',
+    '## 教学目标',
+    '1. 结合乡土情境理解核心知识点。',
+    '2. 从本地案例中提炼观察维度。',
+    '3. 完成小组合作与汇报展示。',
+    '',
+    '## 本地案例资源',
+    '- 待补充',
+    '',
+    '## 活动设计（40分钟）',
+    '### 情境导入（8分钟）',
+    '### 小组任务（20分钟）',
+    '### 汇报评价（10分钟）',
+    '### 课末沉淀（2分钟）',
+    '',
+    `> 需求：${requirement || '请补充'}`,
+  ].join('\n')
 }
 
-function seedDrafts() {
-  return seniorApp.lesson.drafts.map((item) => ({
-    ...item,
-    content: buildDraftContent(`请根据${item.title}补充教学目标、本地案例和活动设计。`),
-    annotations: {
-      goal: [],
-      localCase: [],
-      activity: [],
-    },
-  }))
-}
-
-function readDrafts() {
-  if (typeof window === 'undefined') return seedDrafts()
-  const raw = window.localStorage.getItem(STORAGE_KEY)
-  if (!raw) return seedDrafts()
+async function addDraft(item) {
+  loading.value = true
+  error.value = ''
   try {
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed) || !parsed.length) return seedDrafts()
-    return parsed.map((item) => ({
-      ...item,
-      annotations: {
-        goal: item.annotations?.goal || [],
-        localCase: item.annotations?.localCase || [],
-        activity: item.annotations?.activity || [],
-      },
-    }))
-  } catch {
-    return seedDrafts()
+    const created = await createLesson({
+      title: item.title || '教案草稿',
+      summary: item.summary || '',
+      requirement: item.requirement || '',
+      content: item.content || '',
+      contentJson: item.contentJson || '',
+    })
+    const draft = toDraftItem(created)
+    draft.annotations = item.annotations || { goal: [], localCase: [], activity: [] }
+    drafts.value.unshift(draft)
+    return created
+  } catch (e) {
+    error.value = e.message || '保存失败'
+    throw e
+  } finally {
+    loading.value = false
   }
 }
 
-const drafts = ref(readDrafts())
+async function updateDraft(id, patch) {
+  loading.value = true
+  error.value = ''
+  try {
+    const updated = await updateLessonApi(id, {
+      title: patch.title || '未命名教案',
+      summary: patch.summary || '',
+      requirement: patch.requirement || '',
+      content: patch.content || '',
+      contentJson: patch.contentJson || '',
+    })
+    const target = drafts.value.find((item) => item.id === id)
+    if (target) {
+      Object.assign(target, {
+        title: updated.title,
+        summary: updated.summary,
+        requirement: updated.requirement,
+        content: updated.content,
+        contentJson: updated.contentJson,
+        updatedAt: formatTime(updated.updatedAt),
+      })
+    }
+    return updated
+  } catch (e) {
+    error.value = e.message || '更新失败'
+    throw e
+  } finally {
+    loading.value = false
+  }
+}
 
-function persistDrafts() {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(drafts.value))
+async function addAnnotation(draftId, section, payload) {
+  try {
+    const reflection = await createReflection({
+      lessonId: draftId,
+      text: `[${section}] ${payload.text}`,
+    })
+    const target = drafts.value.find((item) => item.id === draftId)
+    if (target?.annotations?.[section]) {
+      target.annotations[section].unshift({
+        id: reflection.id,
+        time: formatTime(reflection.createdAt),
+        text: payload.text,
+      })
+    }
+    return reflection
+  } catch (e) {
+    error.value = e.message || '添加批注失败'
+    throw e
+  }
+}
+
+async function loadAnnotations(lessonId) {
+  try {
+    const reflections = await listReflections(lessonId)
+    const target = drafts.value.find((item) => item.id === lessonId)
+    if (target) {
+      target.annotations = { goal: [], localCase: [], activity: [] }
+      reflections.forEach((r) => {
+        const match = r.text?.match(/^\[(goal|localCase|activity)\]\s*/)
+        const section = match ? match[1] : 'goal'
+        const text = match ? r.text.slice(match[0].length) : r.text
+        target.annotations[section].push({
+          id: r.id,
+          time: formatTime(r.createdAt),
+          text,
+        })
+      })
+    }
+    return reflections
+  } catch (e) {
+    error.value = e.message || '加载批注失败'
+    return []
+  }
 }
 
 export function useSeniorLessonStore() {
-  function addDraft(item) {
-    drafts.value.unshift({
-      ...item,
-      annotations: item.annotations || { goal: [], localCase: [], activity: [] },
-    })
-    persistDrafts()
-  }
-
-  function updateDraft(id, patch) {
-    const target = drafts.value.find((item) => item.id === id)
-    if (!target) return
-    Object.assign(target, patch)
-    persistDrafts()
-  }
-
-  function addAnnotation(draftId, section, payload) {
-    const target = drafts.value.find((item) => item.id === draftId)
-    if (!target) return
-    if (!target.annotations) target.annotations = { goal: [], localCase: [], activity: [] }
-    if (!target.annotations[section]) target.annotations[section] = []
-    target.annotations[section].unshift(payload)
-    persistDrafts()
-  }
-
-  function replaceAll(nextDrafts) {
-    drafts.value = nextDrafts
-    persistDrafts()
-  }
-
+  loadDrafts()
   return {
     drafts,
+    loading,
+    error,
+    loadDrafts,
+    generateLesson,
     buildDraftContent,
     addDraft,
     updateDraft,
     addAnnotation,
-    replaceAll,
+    loadAnnotations,
   }
 }

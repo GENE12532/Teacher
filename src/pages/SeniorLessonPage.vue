@@ -5,22 +5,37 @@ import SoloAppShell from '../components/SoloAppShell.vue'
 import UiButton from '../components/ui/UiButton.vue'
 import UiCard from '../components/ui/UiCard.vue'
 import UiProgress from '../components/ui/UiProgress.vue'
-import { seniorApp } from '../mock/platformData'
 import { useSpeechRecognition } from '../composables/useSpeechRecognition'
 import { useSeniorLessonStore } from '../composables/useSeniorLessonStore'
 
-const { drafts: savedDrafts, buildDraftContent, addDraft, updateDraft } = useSeniorLessonStore()
+const {
+  drafts: savedDrafts,
+  loading,
+  generateLesson,
+  buildDraftContent,
+  addDraft,
+  updateDraft,
+} = useSeniorLessonStore()
 
-const voiceInput = ref(seniorApp.lesson.input)
+const appName = '资深教师端'
+const pageTitle = '智能语音备课'
+const pageSubtitle = '围绕本地情境快速生成结构化教案，并持续维护多个版本。'
+const theme = 'senior'
+const navItems = [
+  { name: '备课', path: '/senior/lesson', icon: '备' },
+  { name: '反思', path: '/senior/reflection', icon: '思' },
+]
+
+const voiceInput = ref('')
 const generatedDraft = ref('')
 const generateProgress = ref(0)
 const generateStatus = ref('等待生成')
 const isGenerating = ref(false)
 
 const currentStage = ref(1)
-const selectedSavedId = ref(savedDrafts.value[0]?.id ?? null)
-const editableTitle = ref(savedDrafts.value[0]?.title ?? '')
-const editableContent = ref(savedDrafts.value[0]?.content ?? '')
+const selectedSavedId = ref(null)
+const editableTitle = ref('')
+const editableContent = ref('')
 const markdownView = ref('edit')
 
 const recognition = useSpeechRecognition()
@@ -32,7 +47,36 @@ watch(
   },
 )
 
-const selectedSavedDraft = computed(() => savedDrafts.value.find((item) => item.id === selectedSavedId.value) ?? null)
+watch(
+  () => savedDrafts.value,
+  (drafts) => {
+    if (drafts.length > 0 && !selectedSavedId.value && currentStage.value === 1) {
+      selectedSavedId.value = drafts[0].id
+      editableTitle.value = drafts[0].title
+      editableContent.value = drafts[0].content
+    }
+  },
+  { immediate: true },
+)
+
+const selectedSavedDraft = computed(() =>
+  savedDrafts.value.find((item) => item.id === selectedSavedId.value) ?? null,
+)
+
+const derivedStats = computed(() => {
+  const total = savedDrafts.value.length
+  const now = new Date()
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+  const thisWeek = savedDrafts.value.filter((d) => {
+    if (!d.createdAt) return false
+    return new Date(d.createdAt) >= weekAgo
+  }).length
+  return [
+    { label: '已保存版本', value: String(total) },
+    { label: '本周教案', value: String(thisWeek) },
+    { label: '本地案例引用', value: '—' },
+  ]
+})
 
 const workflow = computed(() => [
   {
@@ -81,44 +125,44 @@ function nextStage() {
   if (currentStage.value < 3) currentStage.value += 1
 }
 
-function generateDraft() {
+async function generateDraft() {
+  if (!voiceInput.value.trim()) return
   isGenerating.value = true
-  generateProgress.value = 16
-  generateStatus.value = '正在解析语音需求'
+  generateProgress.value = 30
+  generateStatus.value = '正在生成教案...'
 
-  window.setTimeout(() => {
-    generateProgress.value = 44
-    generateStatus.value = '正在生成教学目标与评价标准'
-  }, 320)
-
-  window.setTimeout(() => {
-    generateProgress.value = 72
-    generateStatus.value = '正在匹配本地案例与活动流程'
-  }, 720)
-
-  window.setTimeout(() => {
-    generatedDraft.value = buildDraftContent(voiceInput.value)
+  try {
+    const result = await generateLesson(voiceInput.value)
     generateProgress.value = 100
     generateStatus.value = '生成完成，可保存到历史教案并进入编辑'
+    generatedDraft.value = result.markdown || buildDraftContent(voiceInput.value)
+  } catch (e) {
+    generateProgress.value = 0
+    generateStatus.value = '生成失败：' + (e.message || '请重试')
+    generatedDraft.value = buildDraftContent(voiceInput.value)
+  } finally {
     isGenerating.value = false
-  }, 1160)
+  }
 }
 
-function saveGeneratedToHistory() {
+async function saveGeneratedToHistory() {
   if (!generatedDraft.value.trim()) return
   const now = new Date()
   const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  const item = {
-    id: Date.now(),
-    title: `教案草稿-${time}`,
-    summary: '结构化教案 · Markdown 版本',
-    updatedAt: `今天 ${time}`,
-    content: generatedDraft.value,
-    annotations: { goal: [], localCase: [], activity: [] },
+  try {
+    await addDraft({
+      title: `教案草稿-${time}`,
+      summary: '结构化教案 · Markdown 版本',
+      content: generatedDraft.value,
+      annotations: { goal: [], localCase: [], activity: [] },
+    })
+    if (savedDrafts.value.length > 0) {
+      selectSavedDraft(savedDrafts.value[0])
+    }
+    currentStage.value = 3
+  } catch {
+    // error handled by store
   }
-  addDraft(item)
-  selectSavedDraft(item)
-  currentStage.value = 3
 }
 
 function selectSavedDraft(item) {
@@ -128,16 +172,17 @@ function selectSavedDraft(item) {
   currentStage.value = 3
 }
 
-function saveEditedDraft() {
+async function saveEditedDraft() {
   if (!selectedSavedDraft.value) return
-  const now = new Date()
-  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  updateDraft(selectedSavedId.value, {
-    title: editableTitle.value || '未命名教案',
-    content: editableContent.value,
-    summary: '结构化教案 · Markdown 已编辑',
-    updatedAt: `今天 ${time}`,
-  })
+  try {
+    await updateDraft(selectedSavedId.value, {
+      title: editableTitle.value || '未命名教案',
+      content: editableContent.value,
+      summary: '结构化教案 · Markdown 已编辑',
+    })
+  } catch {
+    // error handled by store
+  }
 }
 
 function renderMarkdown(markdown = '') {
@@ -181,12 +226,12 @@ const editablePreviewHtml = computed(() => renderMarkdown(editableContent.value 
 
 <template>
   <SoloAppShell
-    :app-name="seniorApp.appName"
-    :title="seniorApp.lesson.title"
-    :subtitle="seniorApp.lesson.subtitle"
-    :stats="seniorApp.lesson.stats"
-    :nav-items="seniorApp.navItems"
-    :theme="seniorApp.theme"
+    :app-name="appName"
+    :title="pageTitle"
+    :subtitle="pageSubtitle"
+    :stats="derivedStats"
+    :nav-items="navItems"
+    :theme="theme"
   >
     <template #left>
       <aside class="lesson-bookmark-sidebar">
@@ -230,6 +275,7 @@ const editablePreviewHtml = computed(() => renderMarkdown(editableContent.value 
             <BookCopy :size="16" />
             <strong>历史教案</strong>
           </div>
+          <p v-if="loading" class="helper-copy">加载中…</p>
           <article
             v-for="item in savedDrafts"
             :key="item.id"
@@ -240,6 +286,7 @@ const editablePreviewHtml = computed(() => renderMarkdown(editableContent.value 
             <strong>{{ item.title }}</strong>
             <small>{{ item.updatedAt }}</small>
           </article>
+          <p v-if="!loading && !savedDrafts.length" class="helper-copy">暂无教案，请先生成一篇。</p>
         </div>
       </aside>
     </template>

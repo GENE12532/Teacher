@@ -83,6 +83,7 @@ small { color: var(--text-faint); }
 .login-state-dot { width: .7rem; height: .7rem; border-radius: 999px; background: #6f97c3; }
 .login-card-clean h2 { font-size: 1.5rem; line-height: 1.25; }
 .login-brand, .hero-kicker { color: var(--primary-strong); font-size: .86rem; font-weight: 700; }
+.login-error { color: #dc2626; font-size: .88rem; }
 .login-form-clean, .login-form, .inline-editor, .card-list, .mini-list, .choice-bar, .visual-card, .editor-card, .app-content, .feature-screen, .solo-content { display: grid; gap: 12px; }
 .login-button-clean, .login-button, .screen-primary, .screen-secondary, .choice-btn, .ghost-btn, .solo-home-link, .app-sidebar-home, .mic-btn { min-height: 40px; padding: 0 14px; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border); }
 .login-button-clean, .login-button, .screen-primary { background: var(--primary); border-color: var(--primary); color: #fff; }

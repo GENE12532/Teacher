@@ -1,7 +1,8 @@
 <script setup>
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { ArrowLeft, BookOpen, BrainCircuit, BriefcaseBusiness, ChartNoAxesColumn, CircleHelp, FileText, GraduationCap, LayoutGrid, LibraryBig, Mic, NotebookPen, Sparkles, Telescope } from 'lucide-vue-next'
+import { ArrowLeft, BookOpen, BrainCircuit, BriefcaseBusiness, ChartNoAxesColumn, CircleHelp, FileText, GraduationCap, LayoutGrid, LibraryBig, LogOut, Mic, NotebookPen, Sparkles, Telescope } from 'lucide-vue-next'
+import { useAuthStore } from '../stores/authStore'
 import UiCard from '@/components/ui/UiCard.vue'
 import UiBadge from '@/components/ui/UiBadge.vue'
 
@@ -16,6 +17,7 @@ const props = defineProps({
 })
 
 const route = useRoute()
+const { logout } = useAuthStore()
 const active = computed(() => route.path)
 
 const themeMeta = computed(() => {
@@ -120,6 +122,10 @@ const routeClass = computed(() => active.value.replace(/^\//, '').replace(/\//g,
             <ArrowLeft :size="16" />
             返回首页
           </RouterLink>
+          <button class="app-sidebar-home social-home-link desktop-only-inline logout-btn" @click="logout">
+            <LogOut :size="16" />
+            退出
+          </button>
         </div>
       </div>
     </header>

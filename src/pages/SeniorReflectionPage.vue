@@ -5,33 +5,86 @@ import SoloAppShell from '../components/SoloAppShell.vue'
 import UiButton from '../components/ui/UiButton.vue'
 import UiCard from '../components/ui/UiCard.vue'
 import UiProgress from '../components/ui/UiProgress.vue'
-import { seniorApp } from '../mock/platformData'
 import { useSpeechRecognition } from '../composables/useSpeechRecognition'
 import { useSeniorLessonStore } from '../composables/useSeniorLessonStore'
 
-const { drafts: lessonDrafts, addAnnotation } = useSeniorLessonStore()
+const { drafts: lessonDrafts, addAnnotation, loadAnnotations } = useSeniorLessonStore()
+
+const appName = '资深教师端'
+const pageTitle = '随堂反思'
+const pageSubtitle = '沉淀课堂问题、改进动作与后续跟踪，形成可追踪复盘记录。'
+const theme = 'senior'
+const navItems = [
+  { name: '备课', path: '/senior/lesson', icon: '备' },
+  { name: '反思', path: '/senior/reflection', icon: '思' },
+]
+
 const draft = ref('')
 const selectedLessonId = ref(null)
 const currentStage = ref(1)
-const records = ref(seniorApp.reflection.records.map((item) => ({ ...item, lessonId: null, annotations: [] })))
 const recognition = useSpeechRecognition()
 
 watch(() => recognition.liveText.value, (value) => {
   if (recognition.isListening.value && value) draft.value = value
 })
 
-const selectedLesson = computed(() => lessonDrafts.value.find((item) => item.id === selectedLessonId.value) ?? null)
-const visibleRecords = computed(() => selectedLessonId.value ? records.value.filter((item) => item.lessonId === selectedLessonId.value) : [])
+watch(selectedLessonId, async (id) => {
+  if (id) {
+    await loadAnnotations(id)
+  }
+})
+
+const selectedLesson = computed(() =>
+  lessonDrafts.value.find((item) => item.id === selectedLessonId.value) ?? null,
+)
+
+const hasAnnotations = (lesson) => {
+  if (!lesson?.annotations) return false
+  const a = lesson.annotations
+  return (a.goal?.length || 0) + (a.localCase?.length || 0) + (a.activity?.length || 0) > 0
+}
+
+const derivedStats = computed(() => {
+  const linkedCount = lessonDrafts.value.filter(hasAnnotations).length
+  return [
+    { label: '已关联教案', value: String(linkedCount) },
+    { label: '本周反思', value: '—' },
+    { label: '待整理问题', value: '—' },
+  ]
+})
+
+function buildRecords(lesson) {
+  if (!lesson?.annotations) return []
+  const all = []
+  for (const section of ['goal', 'localCase', 'activity']) {
+    for (const a of (lesson.annotations[section] || [])) {
+      all.push({
+        id: a.id,
+        title: '课堂问题已自动关联到教案',
+        time: a.time,
+        text: a.text,
+        lessonId: selectedLessonId.value,
+        annotations: [{ id: a.id, section, time: a.time, text: a.text }],
+      })
+    }
+  }
+  return all.sort((a, b) => b.id - a.id)
+}
+
+const visibleRecords = computed(() => buildRecords(selectedLesson.value))
+
 const reflectionSteps = computed(() => [
   { id: 1, title: '先选择教案', hint: selectedLesson.value ? `当前：${selectedLesson.value.title}` : '先点击一份教案。' },
   { id: 2, title: '语音描述问题', hint: draft.value.trim() ? '问题已转写，可直接保存。' : '点击麦克风输入课堂问题。' },
   { id: 3, title: '查看教学记录', hint: '系统会自动把问题批注到教案对应位置。' },
 ])
+
 const todoList = computed(() => [
   { id: 't1', text: '选择当前关联教案', done: !!selectedLesson.value },
   { id: 't2', text: '语音输入课堂问题', done: !!draft.value.trim() },
   { id: 't3', text: '保存并生成批注记录', done: !!visibleRecords.value.length },
 ])
+
 const navProgress = computed(() => Math.round((currentStage.value / 3) * 100))
 
 const lessonPreview = computed(() => {
@@ -47,50 +100,51 @@ const lessonPreview = computed(() => {
 function getCover(seed) {
   return `https://picsum.photos/seed/senior-lesson-${seed}/680/380`
 }
+
 function sectionCount(lesson, section) {
   return lesson?.annotations?.[section]?.length || 0
 }
+
 function goStage(id) {
   currentStage.value = id
 }
+
 function nextStage() {
   if (currentStage.value < 3) currentStage.value += 1
 }
+
 function selectLesson(item) {
   selectedLessonId.value = item.id
   if (currentStage.value === 1) currentStage.value = 2
 }
+
 function toggleVoiceInput() {
   if (recognition.isListening.value) return recognition.stop()
   recognition.reset(draft.value)
   recognition.start()
 }
-function randomSection() {
-  const sections = ['goal', 'localCase', 'activity']
-  return sections[Math.floor(Math.random() * sections.length)]
-}
-function buildRandomAnnotations(text, time) {
-  const templates = [
-    (value) => `课堂问题：${value}`,
-    (value) => `跟进建议：建议下次围绕“${value.slice(0, 12)}”提前给出操作提示。`,
-    (value) => `复盘提醒：本节课中与“${value.slice(0, 10)}”相关的环节需要延长 2-3 分钟。`,
-  ]
-  return templates.map((factory, index) => ({ id: `${Date.now()}-${index}`, section: randomSection(), time, text: factory(text) }))
-}
-function saveReflectionRecord() {
+
+async function saveReflectionRecord() {
   if (!draft.value.trim() || !selectedLessonId.value) return
-  const now = new Date()
-  const timeLabel = `今天 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  const annotations = buildRandomAnnotations(draft.value, timeLabel)
-  annotations.forEach((item) => addAnnotation(selectedLessonId.value, item.section, { id: item.id, time: item.time, text: item.text }))
-  records.value.unshift({ id: Date.now(), title: '课堂问题已自动关联到教案', time: timeLabel, text: draft.value, lessonId: selectedLessonId.value, annotations })
-  draft.value = ''
-  currentStage.value = 3
+  try {
+    await addAnnotation(selectedLessonId.value, 'goal', {
+      id: Date.now(),
+      time: new Date().toISOString(),
+      text: draft.value,
+    })
+    draft.value = ''
+    await loadAnnotations(selectedLessonId.value)
+    currentStage.value = 3
+  } catch {
+    // error handled by store
+  }
 }
+
 function useRecord(item) {
   draft.value = item.text
   currentStage.value = 2
 }
+
 function formatAnnotationBlock(list, title) {
   if (!list.length) return ''
   const body = list.slice(0, 3)
@@ -98,6 +152,7 @@ function formatAnnotationBlock(list, title) {
     .join('')
   return `\n<div class="md-annotation-block"><span class="md-annotation-label">${title}</span>${body}</div>\n`
 }
+
 function renderMarkdown(markdown = '') {
   const annotationTokens = []
   const protectedMarkdown = markdown.replace(/<div class="md-annotation-block">[\s\S]*?<\/div>/g, (block) => {
@@ -121,7 +176,7 @@ function renderMarkdown(markdown = '') {
 </script>
 
 <template>
-  <SoloAppShell :app-name="seniorApp.appName" :title="seniorApp.reflection.title" :subtitle="seniorApp.reflection.subtitle" :stats="seniorApp.reflection.stats" :nav-items="seniorApp.navItems" :theme="seniorApp.theme">
+  <SoloAppShell :app-name="appName" :title="pageTitle" :subtitle="pageSubtitle" :stats="derivedStats" :nav-items="navItems" :theme="theme">
     <template #left>
       <aside class="lesson-bookmark-sidebar">
         <div class="bookmark-card">
@@ -154,7 +209,7 @@ function renderMarkdown(markdown = '') {
           <li><span class="workspace-check"></span><span>案例批注：{{ sectionCount(selectedLesson, 'localCase') }}</span></li>
           <li><span class="workspace-check"></span><span>活动批注：{{ sectionCount(selectedLesson, 'activity') }}</span></li>
         </ul>
-        <div class="workspace-panel-foot"><strong>自动关联</strong><p>系统会随机把反思批注插入原教案对应位置。</p></div>
+        <div class="workspace-panel-foot"><strong>自动关联</strong><p>反思批注会插入原教案对应位置。</p></div>
       </UiCard>
     </template>
 
@@ -176,7 +231,7 @@ function renderMarkdown(markdown = '') {
           <div class="lesson-mic-status" :class="{ listening: recognition.isListening.value }"><div class="mic-live-indicator" aria-hidden="true"><span></span><span></span><span></span></div><p>{{ recognition.isListening.value ? '正在聆听课堂问题描述…' : '点击麦克风后可直接说出课堂问题' }}</p></div>
           <textarea v-model="draft" rows="8" placeholder="例如：活动说明偏晚，导致展示时间不足。"></textarea>
           <p v-if="recognition.error.value" class="helper-error">{{ recognition.error.value }}</p>
-          <p v-else class="helper-copy">语音会自动转写成文字，保存后系统会随机生成批注并插入原教案。</p>
+          <p v-else class="helper-copy">语音会自动转写成文字，保存后会在对应区域生成批注。</p>
           <div class="bottom-action-bar"><UiButton @click="saveReflectionRecord" :disabled="!draft.trim() || !selectedLessonId"><Save :size="16" /> 关联并保存记录</UiButton></div>
         </section>
 
